@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  AWS CloudFormation Template of Cloudfront Distribution with S3 source over ssl:
+  Static content hosted S3 and served via Amazone CloudFront. It assumes you already have a
+  Hosted Zone registered with Amazon Route 53. This must be setup in the us-east-1 zone due
+  to the use of AWS certificate manager
+
+Parameters:
+  HostedZone:
+    Type: String
+    Description: The DNS name of an existing Amazon Route 53 hosted zone
+    AllowedPattern: '(?!-)[a-zA-Z0-9-.]{1,63}(?<!-)'
+    ConstraintDescription: must be a valid DNS zone name.
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+    Description: Hosted Zone id for the Hosted Zone you're setting up, of the form 'Z23YXV4OVPL04A'
+    ConstraintDescription: must be a valid Hosted Zone ID
+
+Mappings:
+  Region2S3WebsiteSuffix:
+    us-east-1:
+      Suffix: .s3-website-us-east-1.amazonaws.com
+    us-east-2:
+      Suffix: .s3-website-us-east-2.amazonaws.com
+    us-west-1:
+      Suffix: .s3-website-us-west-1.amazonaws.com
+    us-west-2:
+      Suffix: .s3-website-us-west-2.amazonaws.com
+
+Resources:
+  S3BucketForStaticContent:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: PublicRead
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+  WebsiteCDN:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: CDN for S3-backed website
+        Aliases:
+          - !Ref HostedZone
+          # Uncomment this and the Route53 recordset below if setting up www subdomain
+          # - !Join [ ".", [ "www", !Ref HostedZone ] ]
+        Enabled: 'true'
+        DefaultCacheBehavior:
+          Compress: 'true'
+          ForwardedValues:
+            QueryString: 'true'
+          MaxTTL: 120
+          MinTTL: 0
+          DefaultTTL: 120
+          TargetOriginId: only-origin
+          ViewerProtocolPolicy: redirect-to-https
+        DefaultRootObject: index.html
+        ViewerCertificate:
+          AcmCertificateArn: !Ref RootWildcardCertificate
+          SslSupportMethod: sni-only
+        Origins:
+          - CustomOriginConfig:
+              OriginProtocolPolicy: http-only
+            DomainName: !Join
+              - ''
+              - - !Ref S3BucketForStaticContent
+                - !FindInMap
+                  - Region2S3WebsiteSuffix
+                  - !Ref 'AWS::Region'
+                  - Suffix
+            Id: only-origin
+  RootWildcardCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref HostedZone
+      DomainValidationOptions:
+        - DomainName: !Ref HostedZone
+          ValidationDomain: !Ref HostedZone
+      # uncomment this is you'd also like to set up the www subdomain
+      # This actually set's up a wildcard domain which will cover www and anything else.
+      # SubjectAlternativeNames:
+      #   - !Join [ ".", [ "*", !Ref HostedZone ] ]
+  WebsiteDNSName:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      AliasTarget:
+        DNSName: !GetAtt WebsiteCDN.DomainName
+        # Note, when using AliasTarget the ZoneId below must be hardcode to that of CloudFront.
+        # See http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-route53-aliastarget.html
+        # for an explanation or just trust that it works. :)
+        HostedZoneId: Z2FDTNDATAQYW2
+      HostedZoneId: !Ref HostedZoneId
+      Comment: Alias record to CloudFront distribution
+      Name: !Ref HostedZone
+      Type: A
+  # uncomment this is you'd also like to set up the www subdomain
+  # WebsiteDNSWWWName:
+  #   Type: AWS::Route53::RecordSet
+  #   Properties:
+  #     HostedZoneName: !Join [ "", [ !Ref HostedZone, "." ] ]
+  #     AliasTarget:
+  #       DNSName: !GetAtt WebsiteCDN.DomainName
+  #       HostedZoneId: !Ref HostedZoneId
+  #     Comment: Alias record to CloudFront distribution
+  #     Name: !Join [ ".", [ "www", !Ref HostedZone ] ]
+  #     Type: A
+
+Outputs:
+  WebsiteURL:
+    Value: !Join
+      - ''
+      - - 'http://'
+        - !Ref WebsiteDNSName
+    Description: The URL of the newly created website
+  BucketName:
+    Value: !Ref S3BucketForStaticContent
+    Description: Name of S3 bucket to hold website content
